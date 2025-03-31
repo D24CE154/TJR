@@ -99,9 +99,10 @@ def category_wise_xgboost_modeling(dataframe, X_data, sensor_key_map):
 
 results_xgb, models_xgb, test_data_xgb, pred_data_xgb = category_wise_xgboost_modeling(df, X_spec, sensor_key_map)
 
+# Training phase performance matrix
 performance_matrix = pd.DataFrame(results_xgb).T
 performance_matrix['Average R2'] = performance_matrix.mean(axis=1)
-print("Performance Matrix:")
+print("Training Phase Performance Matrix:")
 print(performance_matrix)
 
 best_category = performance_matrix.sort_values(by='Average R2', ascending=False).head(1)
@@ -116,15 +117,6 @@ def plot_r2_scores(performance_matrix):
     plt.show()
 
 plot_r2_scores(performance_matrix)
-
-def plot_actual_vs_predicted(y_test, y_pred):
-    for i, (key, sensor) in enumerate(sensor_key_map.items()):
-        plt.figure(figsize=(6, 4))
-        plt.scatter(y_test[sensor], y_pred[:, i], alpha=0.5)
-        plt.xlabel("Actual Values")
-        plt.ylabel("Predicted Values")
-        plt.title(f"Actual vs Predicted for {sensor}")
-        plt.show()
 
 def plot_spectrometer_vs_sensor(df, best_cat_name, spectral_columns, sensor_key_map, model, scaler, num_samples=5):
     df_best = df[df['Category'] == best_cat_name]
@@ -177,6 +169,26 @@ if best_cat_name and best_cat_name in models_xgb:
     plot_spectrometer_vs_sensor(df, best_cat_name, spectral_columns, sensor_key_map, models_xgb[best_cat_name], scaler_spec)
     plot_actual_vs_predicted(test_data_xgb[best_cat_name], pred_data_xgb[best_cat_name], sensor_key_map)
 
+# NEW: Evaluation phase performance matrix
+def evaluate_model_performance(models_xgb, test_data_xgb, pred_data_xgb, sensor_key_map):
+    results = {}
+
+    for cat in models_xgb.keys():
+        y_test = test_data_xgb[cat]
+        y_pred = pred_data_xgb[cat]
+
+        r2_scores = {key: r2_score(y_test[sensor], y_pred[:, i])
+                     for i, (key, sensor) in enumerate(sensor_key_map.items())}
+        results[cat] = r2_scores
+
+    performance_matrix_eval = pd.DataFrame(results).T
+    performance_matrix_eval['Average R2'] = performance_matrix_eval.mean(axis=1)
+    return performance_matrix_eval
+
+# Print evaluation phase performance matrix
+evaluation_matrix = evaluate_model_performance(models_xgb, test_data_xgb, pred_data_xgb, sensor_key_map)
+print("\nEvaluation Phase Performance Matrix:")
+print(evaluation_matrix)
 
 def process_user_csv(file_path):
     df_user = load_and_clean_dataset(file_path)
@@ -185,11 +197,10 @@ def process_user_csv(file_path):
 
     missing_columns = set(spectral_columns) - set(df_user.columns)
     for col in missing_columns:
-        df_user[col] = 0  # Fill missing spectral columns with zero
+        df_user[col] = 0
 
-    df_user = df_user[spectral_columns]  # Ensure correct column order
+    df_user = df_user[spectral_columns]
     X_user = scaler_spec.transform(df_user)
-
     return X_user, df_user
 
 def predict_soil_parameters_from_csv(file_path):
@@ -213,12 +224,10 @@ def predict_soil_parameters_from_csv(file_path):
     print(result_df)
 
     actual_columns = list(sensor_key_map.values())
-
-    # ✅ Forcefully check & handle missing columns
     missing_cols = [col for col in actual_columns if col not in df_user.columns]
 
     if missing_cols:
-        print(f"\n⚠️ Warning: Missing actual values for {missing_cols}. Accuracy cannot be fully calculated.")
+        print(f"\n⚠ Warning: Missing actual values for {missing_cols}. Accuracy cannot be fully calculated.")
     else:
         actual_values = df_user[actual_columns]
         r2_scores = {col: r2_score(actual_values[col], pred_df[col]) for col in actual_columns}
@@ -229,20 +238,14 @@ def predict_soil_parameters_from_csv(file_path):
             print(f"{key}: {value:.4f}")
 
         print(f"\nOverall Prediction Accuracy (R² Score): {overall_r2:.4f}")
-
-        # Add accuracy to the DataFrame
         accuracy_df = pd.DataFrame([r2_scores], index=['R² Score'])
         result_df = pd.concat([result_df, accuracy_df])
-
         plot_actual_vs_predicted(actual_values, predictions)
 
     return result_df
 
-
-# Call the function
-user_csv_path = "dataset.csv"
+user_csv_path = "user_input.csv"
 result_df = predict_soil_parameters_from_csv(user_csv_path)
 
-# Print final DataFrame with Accuracy
 print("\nFinal Output (Predictions + Accuracy):")
 print(result_df)
