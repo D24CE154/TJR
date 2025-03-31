@@ -13,7 +13,6 @@ def load_and_clean_dataset(file_path):
     if not os.path.exists(file_path):
         print("Error: File not found! Please enter a valid path.")
         return None
-
     df = pd.read_csv(file_path)
     df.replace('', np.nan, inplace=True)
     if df.isnull().all().any():
@@ -31,10 +30,8 @@ def cap_outliers(df, columns):
     Q1 = df[columns].quantile(0.25)
     Q3 = df[columns].quantile(0.75)
     IQR = Q3 - Q1
-
     lower_bound = Q1 - 1.5 * IQR
     upper_bound = Q3 + 1.5 * IQR
-
     df[columns] = df[columns].clip(lower=lower_bound, upper=upper_bound, axis=1)
     return df
 
@@ -98,7 +95,6 @@ def category_wise_xgboost_modeling(dataframe, X_data, sensor_key_map):
         results[cat] = r2_scores
         test_data[cat] = y_test
         pred_data[cat] = y_pred
-
     return results, models, test_data, pred_data
 
 results_xgb, models_xgb, test_data_xgb, pred_data_xgb = category_wise_xgboost_modeling(df, X_spec, sensor_key_map)
@@ -111,6 +107,76 @@ print(performance_matrix)
 best_category = performance_matrix.sort_values(by='Average R2', ascending=False).head(1)
 best_cat_name = best_category.index[0] if not best_category.empty else None
 print(f"Best Category Selected: {best_cat_name}")
+
+def plot_r2_scores(performance_matrix):
+    performance_matrix.drop(columns=['Average R2']).plot(kind='bar', figsize=(10, 6), title='R² Scores for Each Category')
+    plt.xlabel('Category')
+    plt.ylabel('R² Score')
+    plt.legend(title='Parameter')
+    plt.show()
+
+plot_r2_scores(performance_matrix)
+
+def plot_actual_vs_predicted(y_test, y_pred):
+    for i, (key, sensor) in enumerate(sensor_key_map.items()):
+        plt.figure(figsize=(6, 4))
+        plt.scatter(y_test[sensor], y_pred[:, i], alpha=0.5)
+        plt.xlabel("Actual Values")
+        plt.ylabel("Predicted Values")
+        plt.title(f"Actual vs Predicted for {sensor}")
+        plt.show()
+
+def plot_spectrometer_vs_sensor(df, best_cat_name, spectral_columns, sensor_key_map, model, scaler, num_samples=5):
+    df_best = df[df['Category'] == best_cat_name]
+    if df_best.empty:
+        print("Error: No data available for the best category.")
+        return
+
+    df_samples = df_best.sample(min(num_samples, len(df_best)), random_state=42)
+    X_samples = scaler.transform(df_samples[spectral_columns])
+    Y_actual = df_samples[list(sensor_key_map.values())].values
+    Y_predicted = model.predict(X_samples)
+    Y_predicted = np.clip(Y_predicted, 0, None)
+
+    wavelengths = np.array([float(col) for col in spectral_columns])
+    sensor_names = list(sensor_key_map.values())
+
+    fig, axes = plt.subplots(2, 2, figsize=(18, 12))
+    axes = axes.flatten()
+
+    for sensor_idx, sensor_name in enumerate(sensor_names):
+        ax = axes[sensor_idx]
+        for i in range(len(df_samples)):
+            ax.plot(wavelengths, X_samples[i], linestyle='-', alpha=0.7, label=f"Sample {i+1}" if sensor_idx == 0 else "")
+
+        for i in range(len(df_samples)):
+            ax.axhline(Y_actual[i, sensor_idx], linestyle='-', color='green', alpha=0.8, label=f"Actual {sensor_name}" if i == 0 else "")
+            ax.axhline(Y_predicted[i, sensor_idx], linestyle='--', color='red', alpha=0.8, label=f"Predicted {sensor_name}" if i == 0 else "")
+
+        ax.set_xlabel("Wavelength (nm)")
+        ax.set_ylabel("Spectral Intensity")
+        ax.set_title(f"Spectrometer Readings vs {sensor_name}")
+        ax.legend()
+
+    plt.tight_layout()
+    plt.show()
+
+def plot_actual_vs_predicted(y_test, y_pred, sensor_key_map):
+    plt.figure(figsize=(12, 8))
+    for i, sensor in enumerate(sensor_key_map.values()):
+        plt.subplot(2, 2, i + 1)
+        plt.scatter(y_test[sensor], y_pred[:, i], alpha=0.7)
+        plt.plot([y_test[sensor].min(), y_test[sensor].max()], [y_test[sensor].min(), y_test[sensor].max()], 'r--')
+        plt.xlabel("Actual Values")
+        plt.ylabel("Predicted Values")
+        plt.title(f"Actual vs Predicted {sensor}")
+    plt.tight_layout()
+    plt.show()
+
+if best_cat_name and best_cat_name in models_xgb:
+    plot_spectrometer_vs_sensor(df, best_cat_name, spectral_columns, sensor_key_map, models_xgb[best_cat_name], scaler_spec)
+    plot_actual_vs_predicted(test_data_xgb[best_cat_name], pred_data_xgb[best_cat_name], sensor_key_map)
+
 
 def process_user_csv(file_path):
     df_user = load_and_clean_dataset(file_path)
@@ -144,21 +210,39 @@ def predict_soil_parameters_from_csv(file_path):
     result_df = pd.concat([df_user, pred_df], axis=1)
 
     print("\nPredicted Soil Parameters:")
-
     print(result_df)
 
-    # Calculate overall R² score
     actual_columns = list(sensor_key_map.values())
-    if all(col in df_user.columns for col in actual_columns):
+
+    # ✅ Forcefully check & handle missing columns
+    missing_cols = [col for col in actual_columns if col not in df_user.columns]
+
+    if missing_cols:
+        print(f"\n⚠️ Warning: Missing actual values for {missing_cols}. Accuracy cannot be fully calculated.")
+    else:
         actual_values = df_user[actual_columns]
-        r2_scores = [r2_score(actual_values[col], predictions[:, i]) for i, col in enumerate(actual_columns)]
-        overall_r2 = np.mean(r2_scores)
+        r2_scores = {col: r2_score(actual_values[col], pred_df[col]) for col in actual_columns}
+        overall_r2 = np.mean(list(r2_scores.values()))
+
+        print("\nR² Scores for Each Parameter:")
+        for key, value in r2_scores.items():
+            print(f"{key}: {value:.4f}")
 
         print(f"\nOverall Prediction Accuracy (R² Score): {overall_r2:.4f}")
 
-    return 'r2_scores',r2_scores, 'overall_r2',overall_r2
+        # Add accuracy to the DataFrame
+        accuracy_df = pd.DataFrame([r2_scores], index=['R² Score'])
+        result_df = pd.concat([result_df, accuracy_df])
 
+        plot_actual_vs_predicted(actual_values, predictions)
+
+    return result_df
+
+
+# Call the function
 user_csv_path = "dataset.csv"
-# Run prediction and print accuracy
-predict_soil_parameters_from_csv(user_csv_path)
+result_df = predict_soil_parameters_from_csv(user_csv_path)
 
+# Print final DataFrame with Accuracy
+print("\nFinal Output (Predictions + Accuracy):")
+print(result_df)
